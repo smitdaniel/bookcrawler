@@ -9,18 +9,24 @@ class BookReviewData:
     read_csv: partial = partial(pd.read_csv, encoding='latin-1',
                                 sep=';', doublequote=True, quotechar='"', escapechar="\\")
 
-    def __init__(self, filter_sole: bool = True):
+    def __init__(self, filter_sole: bool = True, only_lotr: bool = False):
+        self.only_lotr: bool = only_lotr
         self.books: pd.DataFrame = self.read_csv(data / "BX-Books.csv")
         self.users: pd.DataFrame = self.read_csv(data / "BX-Users.csv")
         self.users['Location'] = self.users['Location'].apply(self._alpha_or_na)
         self.ratings: pd.DataFrame = self.read_csv(data / "BX-Full-Ratings.csv")
         if filter_sole: self._filter_sole_ratings()
-        self.lotr: pd.DataFrame = self.books[self.books['Book-Author']
+        interest_mask: pd.DataFrame = self.books['Book-Author'] \
             .isin(["J. R. R. Tolkien", "J.R.R. Tolkien", "J.R.R.Tolkien",
-                   "J.R.R. TOLKIEN", "John Ronald Reuel Tolkien"])]\
+                   "J.R.R. TOLKIEN", "John Ronald Reuel Tolkien"])
+        if only_lotr:
+            interest_mask = (interest_mask & self.books['Book-Title'].str.contains("lord of the rings", case=False))
+        self.lotr: pd.DataFrame = self.books[interest_mask]\
             .drop(["Book-Author", "Year-Of-Publication", "Publisher", "Image-URL-S", "Image-URL-M", "Image-URL-L"],
                   axis=1)
         print("BookReviewData read.")
+        print(f"Sole ratings {'were' if filter_sole else 'were not'} removed.")
+        print(f"Set of interest are {'Lord of the Rings' if only_lotr else 'all Tolkien'} books.")
 
     @classmethod
     def write_full_ratings(cls):
