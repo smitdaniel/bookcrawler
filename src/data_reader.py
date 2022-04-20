@@ -6,7 +6,7 @@ from functools import partial
 
 class BookReviewData:
 
-    read_csv: partial = partial(pd.read_csv, encoding='latin-1',
+    read_csv: partial = partial(pd.read_csv, encoding='latin-1', memory_map=True,
                                 sep=';', doublequote=True, quotechar='"', escapechar="\\")
 
     def __init__(self, filter_sole: bool = True, only_lotr: bool = False):

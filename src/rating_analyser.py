@@ -1,5 +1,5 @@
 from data_reader import BookReviewData
-from typing import Optional, Callable
+from typing import Optional, Callable, List
 from definitions import data
 from pathlib import Path
 import pandas as pd
@@ -21,7 +21,8 @@ class RatingAnalyser:
         self.bracket_lotr: Optional[pd.DataFrame] = RatingAnalyser.read_or_warn(data / "LOTR-Bracket.csv")
         self.close_books: Optional[pd.DataFrame] = RatingAnalyser.read_or_warn(data / close_books)
         self.rating_stats: Optional[pd.DataFrame] = RatingAnalyser.read_or_warn(data / "Rating-Stats.csv")
-        self.close_books_rank: Optional[pd.DataFrame] = None
+        self.close_books_rank: Optional[pd.DataFrame] = RatingAnalyser.read_or_warn(data / "Ranked-Books.csv")
+        self.relevant: Optional[pd.DataFrame] = None
         print("RatingAnalyser object initialized.")
 
     def get_lotr_rating_by_age(self, plot: bool = False) -> None:
@@ -103,7 +104,66 @@ class RatingAnalyser:
         relevant_general.sort_index(inplace=True)
         relevant_close.loc[:, 'rank-gain'] = relevant_close.loc[:, 'rank'] - relevant_general.loc[:, 'rank']
         self.close_books_rank = relevant_close
+        if not (data / "Ranked-Books.csv").is_file():
+            RatingAnalyser.write_csv(self.close_books_rank, data / "Ranked-Books.csv")
         return self.close_books_rank
+
+    def filter_relevant(self, book_limit: int = 500, only_rank_gain: bool = True,
+                        plot_type: str = 'scatter') -> None:
+        if plot_type not in ['scatter', 'heatmap', 'none']:
+            print(f"Allowed plot_type values are 'scatter', 'none', or 'heatmap'. "
+                  f"You passed {plot_type}. Falling back to 'scatter'.")
+            plot_type = 'scatter'
+        mask: pd.Series = (self.close_books_rank['rank-gain'] >= 0) if only_rank_gain \
+            else pd.Series(True, index=self.close_books_rank.index)
+        relevant: pd.DataFrame = self.close_books_rank[mask].nlargest(book_limit, "rank-gain")
+        print(f"Selected {len(relevant.index)} books, "
+              f"of {(self.close_books_rank['rank-gain'] > 0).sum()} books with rank gain >= 0.")
+        print(f"Mean rank-gain is {relevant['rank-gain'].mean()}, mean count is {relevant['count'].mean()}")
+        relevant['rank-spread'] = relevant['rank-gain'] - relevant['rank-gain'].mean()
+        relevant['count-spread'] = relevant['count'] - relevant['count'].mean()
+        print(f"Relevant books have rank-gain std {relevant['rank-gain'].std()}"
+              f"and count std {relevant['count'].std()}.")
+        if plot_type == 'scatter':
+            relevant.plot.scatter(x='rank-spread', y='count-spread', c='rating-mean', colormap='viridis')
+            plt.show()
+        elif plot_type == 'heatmap':
+            RatingAnalyser._plot_relevant_heatmap(relevant)
+        self.relevant: pd.DataFrame = relevant
+
+    def link_relevant(self) -> None:
+        reduced_ratings: pd.DataFrame = self.ratings.groupby('User-ID')\
+                                                    .filter(lambda userid: len(userid.index) < 1000)
+        reduced_ratings = reduced_ratings.loc[reduced_ratings['ISBN'].isin(self.relevant['ISBN'])]\
+                                         .groupby('User-ID')\
+                                         .filter(lambda uid: len(uid.index) > 1)
+        userid_group: pd.DataFrameGroupBy = reduced_ratings.groupby('User-ID')
+        isbns: List[str] = self.relevant['ISBN'].to_list()
+        link_matrix: np.ndarray = np.zeros((len(isbns), len(isbns)))
+        for num_a, isbn_a in enumerate(isbns):
+            print(f"\rProcessing {num_a} of {len(isbns)}.", end="")
+            for num_b, isbn_b in enumerate(isbns[num_a:]):
+                num_b = num_b + num_a
+                link_matrix[num_a, num_b] = userid_group.apply(lambda uid: any(uid['ISBN'] == isbn_a) &
+                                                                           any(uid['ISBN'] == isbn_b))\
+                                                        .sum()
+        self.link_matrix = link_matrix
+
+
+
+    @staticmethod
+    def _plot_relevant_heatmap(relevant: pd.DataFrame) -> None:
+        x = relevant['rank-spread'].to_numpy()
+        y = relevant['count-spread'].to_numpy()
+
+        heatmap, xedges, yedges = np.histogram2d(x, y, bins=(20, 10))
+        extent = [xedges[0], xedges[-1], yedges[0], yedges[-1]]
+
+        plt.clf()
+        plt.imshow(heatmap.T, interpolation='bilinear', extent=extent, origin='lower', aspect='auto')
+        plt.xlabel('rank gain')
+        plt.ylabel('count')
+        plt.show()
 
     @classmethod
     def write_ratings_with_lotr(cls) -> pd.DataFrame:
@@ -145,5 +205,6 @@ class RatingAnalyser:
 
 if __name__ == "__main__":
     ra = RatingAnalyser()
-    ra.filter_lotr_specific()
+    ra.filter_relevant(book_limit=100, only_rank_gain=True, plot_type='none')
+    ra.link_relevant()
     pass
