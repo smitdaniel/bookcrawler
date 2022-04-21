@@ -23,6 +23,9 @@ class RatingAnalyser:
         self.rating_stats: Optional[pd.DataFrame] = RatingAnalyser.read_or_warn(data / "Rating-Stats.csv")
         self.close_books_rank: Optional[pd.DataFrame] = RatingAnalyser.read_or_warn(data / "Ranked-Books.csv")
         self.relevant: Optional[pd.DataFrame] = None
+        self.link_matrix: Optional[pd.DataFrame] = RatingAnalyser.read_or_warn(data / "Link-Matrix.csv")
+        if self.link_matrix is not None:
+            self.link_matrix.set_index(self.link_matrix.columns[0], inplace=True)
         print("RatingAnalyser object initialized.")
 
     def get_lotr_rating_by_age(self, plot: bool = False) -> None:
@@ -45,6 +48,30 @@ class RatingAnalyser:
             self.bracket_lotr.plot.bar()
             plt.show()
 
+
+    def plot_by_country(self, n_large: int = 20, lotr_only: bool = False) -> None:
+        ratings = self.ratings if not lotr_only else self.ratings[self.ratings["ISBN"].isin(self.lotr["ISBN"])]
+        rating_origins = ratings.groupby("Country").count().nlargest(n_large, "Book-Rating")
+        rating_origins.plot.bar(y="Book-Rating")
+        plt.show()
+
+    def plot_by_age(self, year_range: int = 10, lotr_only: bool = False) -> None:
+        ratings = self.ratings if not lotr_only else self.ratings[self.ratings["ISBN"].isin(self.lotr["ISBN"])]
+        rating_age = ratings.groupby(pd.cut(self.ratings["Age"],
+                                            np.arange(self.ratings["Age"].min(), self.ratings["Age"].max(), year_range)))\
+                            .count()
+        rating_age.plot.bar(y="Age")
+        plt.show()
+
+    def plot_by_user_reviews(self, bin_count: int = 10, lotr_only: bool = False) -> None:
+        ratings = self.ratings if not lotr_only else self.ratings[self.ratings["ISBN"].isin(self.lotr["ISBN"])]
+        rating_byuser: pd.DataFrame = ratings.groupby("User-ID").count()
+        plt.hist(rating_byuser['Book-Rating'], log=True, bins=bin_count)
+        plt.xlabel("ratings per user")
+        plt.ylabel("count")
+        plt.title("Ratings per user histogram")
+        plt.show()
+
     def find_close_books(self) -> pd.DataFrame:
         outpath: Path = data / "LOTR-Close-Books.csv" if self.brd.only_lotr else data / "Tolkien-Close-Books.csv"
         positive_lotr_ratings = self.lotr_ratings\
@@ -53,6 +80,8 @@ class RatingAnalyser:
                     all(group.loc[group["ISBN"].isin(self.lotr["ISBN"]), "Book-Rating"] == 0))
         positive_lotr_ratings['Group-Weight'] = positive_lotr_ratings.groupby("User-ID")['ISBN']\
             .transform(lambda group: len(group.loc[group.isin(self.lotr['ISBN'])]))
+        positive_lotr_ratings['Group-Size'] = positive_lotr_ratings.groupby("User-ID")['ISBN']\
+            .transform(lambda group: len(group))
         related_ratings: pd.DataFrame = positive_lotr_ratings.loc[~positive_lotr_ratings["ISBN"].isin(self.lotr["ISBN"])]
         close_books = related_ratings.groupby("ISBN").apply(self._group_isbn)
         self.close_books: pd.DataFrame = close_books.loc[close_books["count"] > 5]
@@ -66,19 +95,6 @@ class RatingAnalyser:
         if not (data / "Rating-Stats.csv").is_file():
             RatingAnalyser.write_csv(self.rating_stats, data / "Rating-Stats.csv")
         return self.rating_stats
-
-    def plot_by_country(self, n_large: int = 20, lotr_only: bool = False) -> None:
-        ratings = self.ratings if not lotr_only else self.ratings[self.ratings["ISBN"].isin(self.lotr["ISBN"])]
-        rating_origins = ratings.groupby("Country").count().nlargest(n_large, "Book-Rating")
-        rating_origins.plot.bar(y="Book-Rating")
-        plt.show()
-
-    def plot_by_age(self, year_range: int = 10, lotr_only: bool = False) -> None:
-        ratings = self.ratings if not lotr_only else self.ratings[self.ratings["ISBN"].isin(self.lotr["ISBN"])]
-        rating_age = ratings.groupby(pd.cut(self.ratings["Age"], np.arange(0, 120, year_range)))\
-            .count()
-        rating_age.plot.bar(y="Age")
-        plt.show()
 
     def filter_lotr_specific(self, thresh_rating: int = 7) -> pd.DataFrame:
         mask: Callable[[pd.DataFrame], pd.Series] = lambda pdf: (pdf['rating-mean'] >= thresh_rating) | \
@@ -131,39 +147,60 @@ class RatingAnalyser:
             RatingAnalyser._plot_relevant_heatmap(relevant)
         self.relevant: pd.DataFrame = relevant
 
-    def link_relevant(self) -> None:
+    def link_relevant(self, best_lotr: int = 15) -> pd.DataFrame:
+        top_lotr_isbn: List[str] = self.lotr_ratings.loc[self.lotr_ratings['ISBN'].isin(self.lotr['ISBN'])]\
+                                                    .groupby('ISBN')\
+                                                    .apply(lambda isbn: len(isbn.index))\
+                                                    .nlargest(best_lotr)\
+                                                    .index\
+                                                    .to_list()
+        isbn_list: List[str] = self.relevant['ISBN'].to_list() + top_lotr_isbn
+        print(f"Selected {len(isbn_list)} books, of which {len(top_lotr_isbn)} are LOTR books.")
         reduced_ratings: pd.DataFrame = self.ratings.groupby('User-ID')\
                                                     .filter(lambda userid: len(userid.index) < 1000)
-        reduced_ratings = reduced_ratings.loc[reduced_ratings['ISBN'].isin(self.relevant['ISBN'])]\
+        reduced_ratings = reduced_ratings.loc[reduced_ratings['ISBN'].isin(isbn_list)]\
                                          .groupby('User-ID')\
                                          .filter(lambda uid: len(uid.index) > 1)
+        print(f"Selected {len(reduced_ratings.index)} ratings for relevant books, with "
+              f" < 1000 books per user, and > 1 selected book per user.")
         userid_group: pd.DataFrameGroupBy = reduced_ratings.groupby('User-ID')
-        isbns: List[str] = self.relevant['ISBN'].to_list()
-        link_matrix: np.ndarray = np.zeros((len(isbns), len(isbns)))
-        for num_a, isbn_a in enumerate(isbns):
-            print(f"\rProcessing {num_a} of {len(isbns)}.", end="")
-            for num_b, isbn_b in enumerate(isbns[num_a:]):
+        link_matrix: np.ndarray = np.zeros((len(isbn_list), len(isbn_list)))
+        for num_a, isbn_a in enumerate(isbn_list):
+            print(f"\rProcessing {num_a} of {len(isbn_list)}.", end="")
+            for num_b, isbn_b in enumerate(isbn_list[num_a:]):
                 num_b = num_b + num_a
                 link_matrix[num_a, num_b] = userid_group.apply(lambda uid: any(uid['ISBN'] == isbn_a) &
                                                                            any(uid['ISBN'] == isbn_b))\
                                                         .sum()
-        self.link_matrix = link_matrix
+                link_matrix[num_b, num_a] = link_matrix[num_a, num_b]
+        self.link_matrix = pd.DataFrame(link_matrix, columns=isbn_list, index=isbn_list)
+        if not (data / "Link-Matrix.csv").is_file():
+            RatingAnalyser.write_csv(self.link_matrix, data / "Link-Matrix.csv")
+        return self.link_matrix
 
+    def print_relevant(self, isbn_list: Optional[List[str]] = None):
+        if isbn_list is None:
+            isbn_list: List[str] = self.link_matrix.index.to_list()
+        relevant_names: pd.Series = self.brd.books.loc[self.brd.books['ISBN'].isin(isbn_list), "Book-Title"]
+        print(f"The following books were selected {relevant_names.to_string()}")
 
-
-    @staticmethod
-    def _plot_relevant_heatmap(relevant: pd.DataFrame) -> None:
-        x = relevant['rank-spread'].to_numpy()
-        y = relevant['count-spread'].to_numpy()
-
-        heatmap, xedges, yedges = np.histogram2d(x, y, bins=(20, 10))
-        extent = [xedges[0], xedges[-1], yedges[0], yedges[-1]]
-
-        plt.clf()
-        plt.imshow(heatmap.T, interpolation='bilinear', extent=extent, origin='lower', aspect='auto')
-        plt.xlabel('rank gain')
-        plt.ylabel('count')
-        plt.show()
+    def explore_links(self, iterations: int = 50):
+        norm: Callable[[np.ndarray], np.ndarray] = lambda v: v / np.linalg.norm(v, ord=1)
+        link_matrix: np.ndarray = self.link_matrix.to_numpy()
+        lotr_matrix: np.ndarray = link_matrix[300:, 300:]
+        book_matrix: np.ndarray = link_matrix[:300, :300]
+        mixing_matrix: np.ndarray = link_matrix[:300, :]
+        lotr_weights: np.ndarray = norm(lotr_matrix.diagonal())
+        candidate_books = np.concatenate([np.zeros(300), lotr_weights])
+        candidate_books = norm(mixing_matrix @ candidate_books)
+        candidate_std: np.ndarray = np.zeros(iterations)
+        for it in range(iterations):
+            candidate_books = norm(book_matrix @ candidate_books)
+            candidate_std[it] = np.std(candidate_books)
+        top_candidates: pd.DataFrame = pd.DataFrame(data=candidate_books, index=self.link_matrix.index[:300],
+                                                    columns=['book-weights'])
+        ten_tops: pd.DataFrame = top_candidates.nlargest(10, 'book-weights')
+        self.print_relevant(isbn_list=ten_tops.index.to_list())
 
     @classmethod
     def write_ratings_with_lotr(cls) -> pd.DataFrame:
@@ -194,17 +231,35 @@ class RatingAnalyser:
         grouped['count'] = len(isbn.index)
         grouped['rating-mean'] = isbn.loc[isbn["Book-Rating"] != 0, "Book-Rating"].mean()
         grouped['rating-std'] = isbn.loc[isbn["Book-Rating"] != 0, "Book-Rating"].std()
-        if 'Group-Weight' in isbn.columns:
+        if 'Group-Weight' in isbn.columns and 'Group-Size' in isbn.columns:
+            grouped['group-size'] = isbn["Group-Size"].mean()
             grouped['group-weight'] = isbn["Group-Weight"].mean()
-            grouped['normalized-weight'] = isbn["Group-Weight"].mean() / len(isbn.index)
+            grouped['normalized-weight'] = isbn["Group-Weight"].mean() / grouped['group-size']
         else:
+            grouped['group-size'] = 0
             grouped['group-weight'] = 0
             grouped['normalized-weight'] = 0
-        return pd.Series(grouped, index=['count', 'rating-mean', 'rating-std', 'group-weight', 'normalized-weight'])
+        return pd.Series(grouped, index=['count', 'rating-mean', 'rating-std',
+                                         'group-size', 'group-weight', 'normalized-weight'])
 
+    @staticmethod
+    def _plot_relevant_heatmap(relevant: pd.DataFrame) -> None:
+        x = relevant['rank-spread'].to_numpy()
+        y = relevant['count-spread'].to_numpy()
+
+        heatmap, xedges, yedges = np.histogram2d(x, y, bins=(20, 10))
+        extent = [xedges[0], xedges[-1], yedges[0], yedges[-1]]
+
+        plt.clf()
+        plt.imshow(heatmap.T, interpolation='bilinear', extent=extent, origin='lower', aspect='auto')
+        plt.xlabel('rank gain')
+        plt.ylabel('count')
+        plt.show()
 
 if __name__ == "__main__":
     ra = RatingAnalyser()
-    ra.filter_relevant(book_limit=100, only_rank_gain=True, plot_type='none')
-    ra.link_relevant()
+    ra.find_close_books()
+    # ra.filter_relevant(book_limit=300, only_rank_gain=True, plot_type='none')
+    # ra.link_relevant()
+    # ra.explore_links()
     pass
