@@ -34,7 +34,7 @@ class RatingAnalyser:
         Note: This takes quite a lot of time to compute.
         """
         bracket_len: int = 10
-        brackets: np.ndarray = np.arange(0, 120, bracket_len)
+        brackets: np.ndarray = np.arange(self.ratings["Age"].min(), self.ratings["Age"].max(), bracket_len)
         bracket_lotr: pd.DataFrame = pd.DataFrame(index=brackets, columns=["Count", "Mean"])
         for low_b in brackets:
             bracket = (low_b, low_b + bracket_len)
@@ -47,7 +47,6 @@ class RatingAnalyser:
         if plot:
             self.bracket_lotr.plot.bar()
             plt.show()
-
 
     def plot_by_country(self, n_large: int = 20, lotr_only: bool = False) -> None:
         ratings = self.ratings if not lotr_only else self.ratings[self.ratings["ISBN"].isin(self.lotr["ISBN"])]
@@ -180,26 +179,31 @@ class RatingAnalyser:
 
     def print_relevant(self, isbn_list: Optional[List[str]] = None):
         if isbn_list is None:
-            isbn_list: List[str] = self.link_matrix.index.to_list()
+            isbn_list: List[str] = self.relevant['ISBN'].to_list()
         relevant_names: pd.Series = self.brd.books.loc[self.brd.books['ISBN'].isin(isbn_list), "Book-Title"]
         print(f"The following books were selected {relevant_names.to_string()}")
 
-    def explore_links(self, iterations: int = 50):
+    def explore_links(self, iterations: int = 50, best_lotr: int = 15):
         norm: Callable[[np.ndarray], np.ndarray] = lambda v: v / np.linalg.norm(v, ord=1)
         link_matrix: np.ndarray = self.link_matrix.to_numpy()
-        lotr_matrix: np.ndarray = link_matrix[300:, 300:]
-        book_matrix: np.ndarray = link_matrix[:300, :300]
-        mixing_matrix: np.ndarray = link_matrix[:300, :]
+        nls = link_matrix.shape[0] - best_lotr
+        lotr_matrix: np.ndarray = link_matrix[nls:, nls:]
+        book_matrix: np.ndarray = link_matrix[:nls, :nls]
+        mixing_matrix: np.ndarray = link_matrix[:nls, :]
         lotr_weights: np.ndarray = norm(lotr_matrix.diagonal())
-        candidate_books = np.concatenate([np.zeros(300), lotr_weights])
+        candidate_books = np.concatenate([np.zeros(nls), lotr_weights])
         candidate_books = norm(mixing_matrix @ candidate_books)
         candidate_std: np.ndarray = np.zeros(iterations)
         for it in range(iterations):
+            old_candidates = candidate_books.copy()
             candidate_books = norm(book_matrix @ candidate_books)
             candidate_std[it] = np.std(candidate_books)
-        top_candidates: pd.DataFrame = pd.DataFrame(data=candidate_books, index=self.link_matrix.index[:300],
+            if np.linalg.norm(old_candidates-candidate_books, ord=1) < 1e-6:
+                print(f"The weights change by less than 1e-6 after {it} iterations")
+                break
+        top_candidates: pd.DataFrame = pd.DataFrame(data=candidate_books, index=self.link_matrix.index[:nls],
                                                     columns=['book-weights'])
-        ten_tops: pd.DataFrame = top_candidates.nlargest(10, 'book-weights')
+        ten_tops: pd.DataFrame = top_candidates.nlargest(30, 'book-weights')
         self.print_relevant(isbn_list=ten_tops.index.to_list())
 
     @classmethod
@@ -256,10 +260,10 @@ class RatingAnalyser:
         plt.ylabel('count')
         plt.show()
 
+
 if __name__ == "__main__":
     ra = RatingAnalyser()
-    ra.find_close_books()
-    # ra.filter_relevant(book_limit=300, only_rank_gain=True, plot_type='none')
+    ra.filter_relevant(book_limit=300, only_rank_gain=True, plot_type='scatter')
+    # ra.print_relevant()
     # ra.link_relevant()
     # ra.explore_links()
-    pass
