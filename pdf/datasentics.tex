@@ -52,19 +52,12 @@
 %%% the first section of slides
 \section{Preparation}
 
-\begin{frame}{Initial data manipulation}
+\begin{frame}{Initial insights}
+	Filter the data, gain initial insights
 	\begin{itemize}
-		\item set up locale, clean missing and malformed data
-		\item remove single ratings (user with 1 book, book with 1 rating)
-		\item bundle ratings with age and geolocation of user
-		\item filter LOTR books, or all Tolkien books (latter better for validation)
-	\end{itemize}
-\end{frame}
-
-\begin{frame}{Insights}
-	\begin{itemize}
-		\item plot ratings by age, geolocation, user ratings
-		\item compute rating-count, and mean rating for LOTR books
+		\item clean bad data, remove lone ratings: user with 1 book, book with 1 rating
+		\item filter LOTR books (keep other Tolkien books for validation), compute rating count and mean rating
+		\item plot ratings by age (bell), geolocation (USA), \structure{ratings count per user}
 	\end{itemize}
 	\begin{figure}
 		\centering
@@ -76,45 +69,37 @@
 %%% the second section
 \section{Metrics}
 
-\begin{frame}{General descriptors}
-	\begin{itemize}
-		\item general ratings statistics by book (count, mean rating, rating std)
-		\item LOTR set books statistics (count, mean and std of rating)
-		\item filtering by low count or low ratings
-	\end{itemize}
-\end{frame}
-
 \begin{frame}{Rating group processing}
-	Prepare user-based groups:\\
+	Process user-based groups
 	\begin{itemize}
 		\item select user-based rating groups $\{\gamma_i\}$ which contain at least one LOTR book
 		\item \emph{count LOTR books} $\{\lambda_i\}$ and \emph{count all books} $\{\beta_i\}$ in each user group $i$ 
 		%\item remove LOTR books from those groups 
 	\end{itemize}
-	Prepare metrics for each relevant books:\\
+	Prepare metrics for each relevant book
 	\begin{enumerate}
 		\item book belongs to $J>5$ rating groups $\{\gamma_1,\ldots,\gamma_J\}$ 
 		\item mean number of LOTR books co-ocurring in rating groups $\Lambda =\frac{1}{J}\sum_{j=1}^{J} \lambda_j $
 		\item mean size of rating groups $B = \frac{1}{J}\sum_{j=1}^J \beta_j$
-		\item normalized weight as $W = \frac{\Lambda}{B}$
+		\item book weight as $W = \frac{\Lambda}{B}$
 	\end{enumerate}
-	Normalization gives high weight to groups where a book is accompanied by a large proportion of LOTR/Tolkien books.\\
-	Note that we could have chosen another metric for normalized weight, possibly involving mean rating, or rating std.
+	Weight add importance to groups where a book is accompanied by a large proportion of LOTR/Tolkien books.\\
+	Note that we could have chosen another metric for weight, possibly involving mean rating, or rating std.
 \end{frame}
 
 \begin{frame}{Ranking}
 	Ranking of Tolkien co-rated books:\\
 	\begin{itemize}
-		\item compute weighted count $\kappa=W\cdot J$ of each book in $\{\gamma_1,\ldots,\gamma_J\}$
-		\item rank book within Tolkien co-rated set by $\kappa$
-		\item rank all general books by their count $\kappa'$ and filter Tolkien co-rated
+		\item compute weighted count $\kappa=W\cdot J$ of each book belonging to $\{\gamma_1,\ldots,\gamma_J\}$
+		\item rank book within Tolkien co-rated set $\{\gamma_i\}$ by $\kappa$
+		\item rank all general books by their count $\kappa'$ in all ratings
 		\item compute rank-gain for each book in Tolkien co-rated set $\kappa - \kappa'$ 
 	\end{itemize}
 	The rank gain represents how much more frequently a book co-occurs with Tolkien books relatively to other book as compared with its general Tolkien–-non-weighted occurence frequency.
 \end{frame}
 
 \begin{frame}{Relevance}
-	Filter books with positive ranking gain $\kappa - \kappa' > 0$, and plot a scatter plot\\
+	Filter books with positive ranking gain $\kappa - \kappa' > 0$
 	\begin{figure}
 		\centering
 		\includegraphics[width=0.6\textwidth]{../img/rank-scatter.png}
@@ -126,38 +111,36 @@
 \section{Book groups}
 
 \begin{frame}{Linking}
-	Build a graph of links between books with positive ranking gain:\\
+	Build a graph of links between books with positive ranking gain
 	\begin{itemize}
-		\item create set of most common Tolkien books $\{\tau_k\}$ and rank gain books $\{\rho_l\}$, $\{\mu_m\}=\{\tau_k\}\cup\{\rho_l\}$
+		\item create set of most common Tolkien books $\{\tau_k\}$ and positive rank gain books $\{\rho_l\}$, $\{\mu_m\}=\{\tau_k\}\cup\{\rho_l\}$
 		\item count pair-wise co-ocurrence in the same rating group $\gamma_i$ for each pair $(\mu_m,\mu_n)$
+		\item get symmetric matrix of co-ocurrence, naming $\rho{-}\rho$ co-occurences $R$, $\tau{-}\tau$ co-occurences $T$, and $\rho{-}\tau$ co-occurences $Q$
 	\end{itemize}
 \end{frame}
 
 
 \begin{frame}{Getting linked group}
-	Estimate a group of books linked to LOTR books and to one another:\\
+	Estimate a group of books linked to LOTR books and to one another
 	\begin{itemize}
 		\item create a normalized vector of weights $\tau^{(1)}$ as relative LOTR books count
-		\item compute a vector of non-LOTR books linked ($\rho{-}\tau$ interactions) to this vector, $\rho^{(1)}$
-		\item redistribute weights $\rho^{(n-1)} \rightarrow \rho^{(n)}$  by links between the books while weight std grows ($\rho{-}\rho$ interactions)
+		\item compute a vector of non-LOTR books linked ($\rho{-}\tau$ co-ocurrence) to this vector, $\rho^{(1)}$
+		\item redistribute weights $\rho^{(n-1)} \rightarrow \rho^{(n)}$  by links between the books while weight std grows, until vector converges
 		\item select the top books from $\rho^{(n)}$
 	\end{itemize}
 	\\[1em]
 	\begin{equation*}
 		\begin{bmatrix}
 			\rho^{(1)} \\
-			{} \\
 			0
 		\end{bmatrix}
 		=
 		\begin{bmatrix}
-			\rho{-}\rho \text{ interactions} & \vdots & \rho{-}\tau \text{ interactions} \\
-			\hdotsfor{3} \\
-			\tau{-}\rho \text{ interactions} & \vdots & \tau{-}\tau \text{ interactions}
+			R & Q \\
+			Q^T  & T
 		\end{bmatrix}
 		\begin{bmatrix}
 			0  \\
-			{} \\
 			\tau^{(1)}
 		\end{bmatrix}
 	\end{equation*}	
@@ -166,14 +149,12 @@
 		\begin{bmatrix}
 			\rho^{(n)}
 		\end{bmatrix}
-		=
-		\begin{bmatrix}
-			\rho{-}\rho \text{ interactions}
-		\end{bmatrix}
+		= R
 		\begin{bmatrix}
 			\rho^{(n-1)}
 		\end{bmatrix}
 	\end{equation*}
 \end{frame}
+
 
 \end{document}

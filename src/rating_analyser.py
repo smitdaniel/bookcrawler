@@ -12,6 +12,11 @@ class RatingAnalyser:
     brd: BookReviewData = BookReviewData(only_lotr=True)
     print("Loaded book review data")
 
+    font = {'family': 'DejaVu Sans',
+            'weight': 'bold',
+            'size': 26}
+    plt.rc('font', **font)
+
     def __init__(self):
         self.ratings: pd.DataFrame = self.brd.ratings
         self.lotr: pd.DataFrame = self.brd.lotr.copy()
@@ -140,7 +145,8 @@ class RatingAnalyser:
         print(f"Relevant books have rank-gain std {relevant['rank-gain'].std()}"
               f"and count std {relevant['count'].std()}.")
         if plot_type == 'scatter':
-            relevant.plot.scatter(x='rank-spread', y='count-spread', c='rating-mean', colormap='viridis')
+            relevant.plot.scatter(x='rank-gain', y='count', c='rating-mean', s=120, colormap='viridis',
+                                  title="Relevant books stats")
             plt.show()
         elif plot_type == 'heatmap':
             RatingAnalyser._plot_relevant_heatmap(relevant)
@@ -248,8 +254,8 @@ class RatingAnalyser:
 
     @staticmethod
     def _plot_relevant_heatmap(relevant: pd.DataFrame) -> None:
-        x = relevant['rank-spread'].to_numpy()
-        y = relevant['count-spread'].to_numpy()
+        x = relevant['rank-gain'].to_numpy()
+        y = relevant['count'].to_numpy()
 
         heatmap, xedges, yedges = np.histogram2d(x, y, bins=(20, 10))
         extent = [xedges[0], xedges[-1], yedges[0], yedges[-1]]
@@ -258,12 +264,13 @@ class RatingAnalyser:
         plt.imshow(heatmap.T, interpolation='bilinear', extent=extent, origin='lower', aspect='auto')
         plt.xlabel('rank gain')
         plt.ylabel('count')
+        plt.title('Relevant books density')
         plt.show()
 
 
 if __name__ == "__main__":
     ra = RatingAnalyser()
-    ra.filter_relevant(book_limit=300, only_rank_gain=True, plot_type='scatter')
+    ra.filter_relevant(book_limit=300, only_rank_gain=True, plot_type='none')
     # ra.print_relevant()
     # ra.link_relevant()
     # ra.explore_links()
