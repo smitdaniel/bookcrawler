@@ -1,5 +1,5 @@
 from data_reader import BookReviewData
-from typing import Optional, Callable, List
+from typing import Optional, Callable, List, Union
 from definitions import data
 from pathlib import Path
 import pandas as pd
@@ -9,26 +9,29 @@ import matplotlib.pyplot as plt
 
 class RatingAnalyser:
 
-    brd: BookReviewData = BookReviewData(only_lotr=True)
-    print("Loaded book review data")
-
     font = {'family': 'DejaVu Sans',
             'weight': 'bold',
             'size': 26}
     plt.rc('font', **font)
 
-    def __init__(self):
+    def __init__(self, author: Union[List[str], str], book_title: Optional[str] = None,
+                 cache_prefix: Optional[str] = None):
+        # create BookReviewData object; if additional filtering is needed, add the functions
+        # like `get_mean_rating` and `filter_low_impact`
+        self.brd: BookReviewData = BookReviewData(author, book_title, True, cache_prefix)
+        self.rating_stats: Optional[pd.DataFrame] = self.read_or_warn(data, "Rating-Stats.csv", no_prefix=True)
+        print(f"Loaded book review data {self.brd}")
+        # read data from the BRD object
         self.ratings: pd.DataFrame = self.brd.ratings
-        self.lotr: pd.DataFrame = self.brd.lotr.copy()
-        interest_ratings: str = "LOTR-Ratings.csv" if self.brd.only_lotr else "Tolkien-Ratings.csv"
-        close_books: str = "LOTR-Close-Books.csv" if self.brd.only_lotr else "Tolkien-Close-Books.csv"
-        self.lotr_ratings: Optional[pd.DataFrame] = RatingAnalyser.read_or_warn(data / interest_ratings)
-        self.bracket_lotr: Optional[pd.DataFrame] = RatingAnalyser.read_or_warn(data / "LOTR-Bracket.csv")
-        self.close_books: Optional[pd.DataFrame] = RatingAnalyser.read_or_warn(data / close_books)
-        self.rating_stats: Optional[pd.DataFrame] = RatingAnalyser.read_or_warn(data / "Rating-Stats.csv")
-        self.close_books_rank: Optional[pd.DataFrame] = RatingAnalyser.read_or_warn(data / "Ranked-Books.csv")
+        self.searched_books: pd.DataFrame = self.brd.searched_books
+        self.prefix: str = self.brd.prefix
+        print(f"Set cached files prefix to {self.prefix}, attempting to read the files from {data / self.prefix}-*")
+        self.lotr_ratings: Optional[pd.DataFrame] = self.read_or_warn(data, "Ratings.csv")
+        self.bracket_lotr: Optional[pd.DataFrame] = self.read_or_warn(data, "Bracket.csv")
+        self.close_books: Optional[pd.DataFrame] = self.read_or_warn(data, "Close-Books.csv")
+        self.close_books_rank: Optional[pd.DataFrame] = self.read_or_warn(data, "Ranked-Books.csv")
         self.relevant: Optional[pd.DataFrame] = None
-        self.link_matrix: Optional[pd.DataFrame] = RatingAnalyser.read_or_warn(data / "Link-Matrix.csv")
+        self.link_matrix: Optional[pd.DataFrame] = self.read_or_warn(data, "Link-Matrix.csv")
         if self.link_matrix is not None:
             self.link_matrix.set_index(self.link_matrix.columns[0], inplace=True)
         print("RatingAnalyser object initialized.")
@@ -54,13 +57,13 @@ class RatingAnalyser:
             plt.show()
 
     def plot_by_country(self, n_large: int = 20, lotr_only: bool = False) -> None:
-        ratings = self.ratings if not lotr_only else self.ratings[self.ratings["ISBN"].isin(self.lotr["ISBN"])]
+        ratings = self.ratings if not lotr_only else self.ratings[self.ratings["ISBN"].isin(self.searched_books["ISBN"])]
         rating_origins = ratings.groupby("Country").count().nlargest(n_large, "Book-Rating")
         rating_origins.plot.bar(y="Book-Rating")
         plt.show()
 
     def plot_by_age(self, year_range: int = 10, lotr_only: bool = False) -> None:
-        ratings = self.ratings if not lotr_only else self.ratings[self.ratings["ISBN"].isin(self.lotr["ISBN"])]
+        ratings = self.ratings if not lotr_only else self.ratings[self.ratings["ISBN"].isin(self.searched_books["ISBN"])]
         rating_age = ratings.groupby(pd.cut(self.ratings["Age"],
                                             np.arange(self.ratings["Age"].min(), self.ratings["Age"].max(), year_range)))\
                             .count()
@@ -68,7 +71,7 @@ class RatingAnalyser:
         plt.show()
 
     def plot_by_user_reviews(self, bin_count: int = 10, lotr_only: bool = False) -> None:
-        ratings = self.ratings if not lotr_only else self.ratings[self.ratings["ISBN"].isin(self.lotr["ISBN"])]
+        ratings = self.ratings if not lotr_only else self.ratings[self.ratings["ISBN"].isin(self.searched_books["ISBN"])]
         rating_byuser: pd.DataFrame = ratings.groupby("User-ID").count()
         plt.hist(rating_byuser['Book-Rating'], log=True, bins=bin_count)
         plt.xlabel("ratings per user")
@@ -77,16 +80,16 @@ class RatingAnalyser:
         plt.show()
 
     def find_close_books(self) -> pd.DataFrame:
-        outpath: Path = data / "LOTR-Close-Books.csv" if self.brd.only_lotr else data / "Tolkien-Close-Books.csv"
+        outpath: Path = data / "LOTR-Close-Books.csv" if self.brd.all_author_books else data / "Tolkien-Close-Books.csv"
         positive_lotr_ratings = self.lotr_ratings\
             .groupby("User-ID")\
-            .filter(lambda group: (group.loc[group["ISBN"].isin(self.lotr["ISBN"]), "Book-Rating"].max() >= 8) |
-                    all(group.loc[group["ISBN"].isin(self.lotr["ISBN"]), "Book-Rating"] == 0))
+            .filter(lambda group: (group.loc[group["ISBN"].isin(self.searched_books["ISBN"]), "Book-Rating"].max() >= 8) |
+                                  all(group.loc[group["ISBN"].isin(self.searched_books["ISBN"]), "Book-Rating"] == 0))
         positive_lotr_ratings['Group-Weight'] = positive_lotr_ratings.groupby("User-ID")['ISBN']\
-            .transform(lambda group: len(group.loc[group.isin(self.lotr['ISBN'])]))
+            .transform(lambda group: len(group.loc[group.isin(self.searched_books['ISBN'])]))
         positive_lotr_ratings['Group-Size'] = positive_lotr_ratings.groupby("User-ID")['ISBN']\
             .transform(lambda group: len(group))
-        related_ratings: pd.DataFrame = positive_lotr_ratings.loc[~positive_lotr_ratings["ISBN"].isin(self.lotr["ISBN"])]
+        related_ratings: pd.DataFrame = positive_lotr_ratings.loc[~positive_lotr_ratings["ISBN"].isin(self.searched_books["ISBN"])]
         close_books = related_ratings.groupby("ISBN").apply(self._group_isbn)
         self.close_books: pd.DataFrame = close_books.loc[close_books["count"] > 5]
         if not outpath.is_file():
@@ -103,8 +106,8 @@ class RatingAnalyser:
     def filter_lotr_specific(self, thresh_rating: int = 7) -> pd.DataFrame:
         mask: Callable[[pd.DataFrame], pd.Series] = lambda pdf: (pdf['rating-mean'] >= thresh_rating) | \
                                                                 (pdf['rating-mean'].isna())
-        print("Started comparing lotr-specific and general bookset.")
-        print(f"Initiating with {len(self.close_books.index)} lotr-books "
+        print("Started comparing searched_books-specific and general bookset.")
+        print(f"Initiating with {len(self.close_books.index)} searched_books-books "
               f"and {len(self.rating_stats.index)} general books.")
         relevant_close: pd.DataFrame = self.close_books.loc[mask(self.close_books)]
         relevant_close['weighted-count'] = relevant_close['count'] * relevant_close['normalized-weight']
@@ -117,7 +120,7 @@ class RatingAnalyser:
         general.loc[:, 'rank'] = general.loc[:, 'count']\
                                         .rank(method='max')\
                                         .apply(lambda r: 100 * (r-1)/len(general.index))
-        print(f"After removing ratings < {thresh_rating}, there are {len(relevant_close.index)} lotr-books "
+        print(f"After removing ratings < {thresh_rating}, there are {len(relevant_close.index)} searched_books-books "
               f"and {len(general.index)} books.")
         relevant_general = general[general["ISBN"].isin(relevant_close.index)]
         relevant_general.set_index("ISBN", inplace=True)
@@ -153,7 +156,7 @@ class RatingAnalyser:
         self.relevant: pd.DataFrame = relevant
 
     def link_relevant(self, best_lotr: int = 15) -> pd.DataFrame:
-        top_lotr_isbn: List[str] = self.lotr_ratings.loc[self.lotr_ratings['ISBN'].isin(self.lotr['ISBN'])]\
+        top_lotr_isbn: List[str] = self.lotr_ratings.loc[self.lotr_ratings['ISBN'].isin(self.searched_books['ISBN'])]\
                                                     .groupby('ISBN')\
                                                     .apply(lambda isbn: len(isbn.index))\
                                                     .nlargest(best_lotr)\
@@ -215,17 +218,20 @@ class RatingAnalyser:
     @classmethod
     def write_ratings_with_lotr(cls) -> pd.DataFrame:
         lotr_ratings = cls.brd.ratings.groupby("User-ID")\
-            .filter(lambda group: any(group["ISBN"].isin(cls.brd.lotr["ISBN"])))
-        outpath: Path = data / "LOTR-Ratings.csv" if cls.brd.only_lotr else data / "Tolkien-Ratings.csv"
+            .filter(lambda group: any(group["ISBN"].isin(cls.brd.searched_books["ISBN"])))
+        outpath: Path = data / "LOTR-Ratings.csv" if cls.brd.all_author_books else data / "Tolkien-Ratings.csv"
         lotr_ratings.set_index("User-ID", inplace=True)
         RatingAnalyser.write_csv(lotr_ratings, outpath)
         return lotr_ratings
 
-    @classmethod
-    def read_or_warn(cls, inpath: Path) -> Optional[pd.DataFrame]:
+    def read_or_warn(self, dirpath: Path, filename: str, no_prefix: Optional[bool] = False) -> Optional[pd.DataFrame]:
+        if no_prefix:
+            inpath: Path = dirpath / filename
+        else:
+            inpath: Path = dirpath / (self.prefix + "-" + filename)
         if inpath.is_file():
             print(f"Found and reading {inpath}.")
-            return cls.brd.read_csv(inpath)
+            return self.brd.read_csv(inpath)
         else:
             print(f"The file in path {inpath} does not exist. Please run the corresponding method to generate it.")
             return None
@@ -269,8 +275,13 @@ class RatingAnalyser:
 
 
 if __name__ == "__main__":
-    ra = RatingAnalyser()
-    ra.filter_relevant(book_limit=300, only_rank_gain=True, plot_type='none')
+    tolkien_names: List[str] = ["J. R. R. Tolkien", "J.R.R. Tolkien", "J.R.R.Tolkien",
+                                "J.R.R. TOLKIEN", "John Ronald Reuel Tolkien"]
+    ra = RatingAnalyser(author="Frank Herbert", book_title='Dune', cache_prefix="Dune")
+    top_books = ra.close_books_rank[['ISBN', 'rank-gain']].nlargest(30, 'rank-gain')\
+                                                          .merge(ra.brd.books[['ISBN', 'Book-Title']], on='ISBN')
+    # print(top_books.to_string())
+    # ra.filter_relevant(book_limit=300, only_rank_gain=True, plot_type='none')
     # ra.print_relevant()
     # ra.link_relevant()
-    # ra.explore_links()
+    ra.explore_links()
