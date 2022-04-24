@@ -11,7 +11,8 @@ class BookReviewData:
                                 sep=';', doublequote=True, quotechar='"', escapechar="\\")
 
     def __init__(self, author: Union[List[str], str], book_title: Optional[str] = None,
-                 filter_sole: bool = True, cache_prefix: Optional[str] = None):
+                 filter_sole: bool = True, cache_prefix: Optional[str] = None,
+                 strict_title: bool = False):
         # set up book titles and forms of author names to search for
         if book_title is None:
             self.all_author_books: bool = True
@@ -33,8 +34,12 @@ class BookReviewData:
         self.ratings: pd.DataFrame = self.read_csv(data / "BX-Full-Ratings.csv")
         if filter_sole: self._filter_sole_ratings()
         interest_mask: pd.DataFrame = self.books['Book-Author'].isin(self.author)
+        if strict_title:
+            title_mask: pd.DataFrame = self.books['Book-Title'] == book_title
+        else:
+            title_mask: pd.DataFrame = self.books['Book-Title'].str.contains(book_title, case=False)
         if not self.all_author_books:
-            interest_mask = (interest_mask & self.books['Book-Title'].str.contains(book_title, case=False))
+            interest_mask = (interest_mask & title_mask)
         self.searched_books: pd.DataFrame = self.books[interest_mask]\
             .drop(["Book-Author", "Year-Of-Publication", "Publisher", "Image-URL-S", "Image-URL-M", "Image-URL-L"],
                   axis=1)
@@ -65,19 +70,23 @@ class BookReviewData:
                             escapechar="\\", na_rep="N/A")
         return full_ratings
 
-    def get_mean_rating(self, rating_age: Optional[Tuple[int, int]] = None) -> pd.DataFrame:
+    def get_mean_searched_rating(self, rating_age: Optional[Tuple[int, int]] = None, silent: bool = False) -> pd.DataFrame:
         """Count number of ratings and mean rating for each book in searched books"""
-        self.searched_books['Rating-Count'] = self.searched_books['ISBN']\
-            .apply(lambda isbn: len(self.ratings.loc[(self.ratings['ISBN'] == isbn) &
-                                                     (BookReviewData._is_in_age(self.ratings['Age'], rating_age))]))
-        self.searched_books['Rating-Mean'] = self.searched_books['ISBN'] \
-            .apply(lambda isbn: self.ratings
-                   .loc[(self.ratings['ISBN'] == isbn) &
-                        (self.ratings['Book-Rating'] != 0) &
-                        (BookReviewData._is_in_age(self.ratings['Age'], rating_age)), "Book-Rating"].mean())
-        print(f"Computed columns of rating count and mean rating for searched books:\n {self.searched_books}")
-        print("Ratings of value 0 were excluded from the mean computation.")
-        return self.searched_books
+        relevant_ratings: pd.DataFrame = self.ratings.loc[(self.ratings['ISBN'].isin(self.searched_books['ISBN'])) &
+                                                          (BookReviewData._is_in_age(self.ratings['Age'], rating_age))]
+        grouped_relevant: pd.DataFrameGroupBy = relevant_ratings[["ISBN", "Book-Rating"]].groupby('ISBN')
+        relevant_measure: pd.DataFrame = pd.DataFrame(columns=['ISBN', 'Rating-Count', 'Rating-Mean'])
+        if len(grouped_relevant) > 0:
+            relevant_measure.drop(columns='ISBN', inplace=True)
+            relevant_measure['Rating-Count'] = grouped_relevant.count()
+            relevant_measure['Rating-Mean'] = grouped_relevant\
+                .apply(lambda isbn: isbn.loc[isbn['Book-Rating'] != 0, "Book-Rating"].mean())
+        searched_books: pd.DataFrame = self.searched_books.copy()
+        searched_books = searched_books.merge(relevant_measure, on='ISBN', how='left')
+        if not silent:
+            print(f"Computed columns of rating count and mean rating for searched books:\n {searched_books}")
+            print("Ratings of value 0 were excluded from the mean computation.")
+        return searched_books
 
     def filter_low_impact(self, least_count: int = 5) -> None:
         """Filter entries in searched_books set by rating count and presence of rating"""
@@ -115,6 +124,6 @@ if __name__ == "__main__":
     tolkien_names: List[str] = ["J. R. R. Tolkien", "J.R.R. Tolkien", "J.R.R.Tolkien",
                                 "J.R.R. TOLKIEN", "John Ronald Reuel Tolkien"]
     brd = BookReviewData(author=tolkien_names, book_title="lord of the rings", cache_prefix="LOTR")
-    brd.get_mean_rating()
+    brd.get_mean_searched_rating()
     brd.filter_low_impact()
     print(f"Set of books to search:\n {brd.searched_books.to_string()}")
