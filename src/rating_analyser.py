@@ -46,6 +46,13 @@ class Cache:
     def __str__(self) -> str:
         return str(self.cache_pattern)
 
+    def delete_cached(self, files: List[str]) -> None:
+        print(f"Purging the cache.")
+        for file in files:
+            csv_path = getattr(self, file.lower().replace("-", "_"))
+            if csv_path.is_file():
+                os.remove(csv_path)
+
     @staticmethod
     def set_prefixed_path(dirpath: Path, filename: str, prefix: Optional[str] = None) -> CsvPath:
         return CsvPath(dirpath / ((prefix + "-" if prefix is not None else "") + filename + ".csv"))
@@ -58,7 +65,7 @@ class RatingAnalyser:
     plt.rc('font', **font)
 
     def __init__(self, author: Union[List[str], str], book_title: Optional[str] = None,
-                 strict_title: bool = False,
+                 strict_title: bool = False, purge_cache: bool = False,
                  cache_prefix: Optional[str] = None, searched_in_link_analysis: int = 15):
         """
         Create instance containing all the definitions for analysis.
@@ -66,8 +73,10 @@ class RatingAnalyser:
         from files. If the files are not find, one needs to call appropriate methods to calculate them.
         :param author: list of strings to match as author name
         :param book_title: string to match as book title
+        :param strict_title: search for the title as given exactly (True), otherwise partial matches are accepted (False)
         :param cache_prefix: prefix to use for cached data files
-        :param searched_in_link_analysis: how many books from searched set (with highest occurence) should be used in
+        :param purge_cache: delete the cached files with the matching prefix first
+        :param searched_in_link_analysis: how many books from searched set (with highest occurrence) should be used in
         links analysis
         """
         # create BookReviewData object; if additional filtering is needed, add the functions
@@ -81,6 +90,8 @@ class RatingAnalyser:
         self.prefix: str = self.brd.prefix
         self.cached: Cache = Cache(data, ["Ratings", "Bracket", "Close-Books", "Ranked-Books", "Link-Matrix"],
                                    ["Rating-Stats"], self.prefix)
+        if purge_cache:
+            self.cached.delete_cached(["Ratings", "Close-Books", "Ranked-Books", "Link-Matrix"])
         print(f"Set cached files prefix to {self.prefix}, attempting to read the files from {self.cached}")
         # read cached data
         self.rating_stats: Optional[pd.DataFrame] = self.cached.rating_stats.read_or_warn()
@@ -155,23 +166,33 @@ class RatingAnalyser:
     General statistics and filtering
     """
 
-    def run_full_analysis(self):
-        """Runs the full pipeline which recalculated files, if not cached"""
+    def run_full_analysis(self, rating_thresh: int = 5, count_thresh: int = 3, plot_type: str = 'none'):
+        """Runs the full pipeline which recalculated files, if not cached
+
+        :param rating_thresh: rating threshold used in filtering of books when computing statistics
+        :param count_thresh: ratings count threshold used in filtering of books when computing statistics
+        :param plot_type: how to plot the ranking-gain results; options are 'none', 'scatter' and 'heatmap'
+        """
+        allowed_plots: List[str] = ['none', 'scatter', 'heatmap']
+        if plot_type not in allowed_plots:
+            print(f"Allowed plot_type arguments are {allowed_plots}. You provided {plot_type}")
+            print("Falling back to 'none'")
+            plot_type = 'none'
         if self.rating_stats is None:
-            self.get_general_rating_stats()
+            self.get_general_rating_stats(minimal_isbn_count=count_thresh)
         if self.searched_ratings is None:
             self.filter_searched_ratings()
         if self.close_books is None:
-            self.find_close_books()
+            self.find_close_books(minimum_close_book_count=count_thresh, required_rating=rating_thresh)
         if self.close_books_rank is None:
-            self.rank_books()
-        self.filter_rank_gain(plot_type='none')
+            self.rank_books(thresh_rating=rating_thresh)
+        self.filter_rank_gain(plot_type=plot_type)
         self.print_relevant()
         if self.link_matrix is None:
             self.link_relevant()
         self.explore_links()
 
-    def get_general_rating_stats(self, minimal_isbn_count: int = 4) -> pd.DataFrame:
+    def get_general_rating_stats(self, minimal_isbn_count: int = 5) -> pd.DataFrame:
         """Compute general statistics of ratings (count, mean, std) of all books
 
         :param minimal_isbn_count: minimal count of ISBN ratings to be included in statistics
@@ -180,6 +201,7 @@ class RatingAnalyser:
         self.rating_stats: pd.DataFrame = self.ratings.groupby("ISBN").apply(self._group_isbn)
         self.rating_stats = self.rating_stats.loc[self.rating_stats["count"] >= minimal_isbn_count]
         self.cached.rating_stats.write_if_absent(self.rating_stats)
+        self.rating_stats.reset_index(drop=False, inplace=True)
         return self.rating_stats
 
     def filter_searched_ratings(self) -> pd.DataFrame:
@@ -191,7 +213,7 @@ class RatingAnalyser:
         self.cached.ratings.write_if_absent(self.searched_ratings.set_index("ISBN"))
         return self.searched_ratings
 
-    def find_close_books(self, minimum_close_book_count: int = 4, required_rating: int = 7) -> pd.DataFrame:
+    def find_close_books(self, minimum_close_book_count: int = 3, required_rating: int = 5) -> pd.DataFrame:
         """Find and score books which appear in the same rating groups as searched books
 
         :param minimum_close_book_count: drop books which appear less times than this threshold
@@ -205,7 +227,7 @@ class RatingAnalyser:
             .groupby("User-ID") \
             .filter(lambda uid: ((searched_mask(uid).max() >= required_rating) | all(searched_mask(uid) == 0)))
         positive_searched_ratings['Group-Weight'] = positive_searched_ratings.groupby("User-ID")['ISBN'] \
-            .transform(lambda group: len(group.isin(self.searched_books['ISBN'])))
+            .transform(lambda group: group.isin(self.searched_books['ISBN']).sum())
         positive_searched_ratings['Group-Size'] = positive_searched_ratings.groupby("User-ID")['ISBN'] \
             .transform(lambda group: len(group))
         # keep only related books (not searched), and compute weights for those books
@@ -214,12 +236,12 @@ class RatingAnalyser:
         print("Converting book selection into a dataframe of weights")
         close_books = related_ratings.groupby("ISBN").apply(self._group_isbn)
         # filter out books with less than 5 occurrences
-        self.close_books: pd.DataFrame = close_books.loc[close_books["count"] > minimum_close_book_count]
+        self.close_books: pd.DataFrame = close_books.loc[close_books["count"] >= minimum_close_book_count]
         self.cached.close_books.write_if_absent(self.close_books)
-        self.close_books['ISBN'] = self.close_books.index   # add isbn also as the index
+        self.close_books['ISBN'] = self.close_books.index   # add index also as the isbn column
         return self.close_books
 
-    def rank_books(self, thresh_rating: int = 6) -> pd.DataFrame:
+    def rank_books(self, thresh_rating: int = 5) -> pd.DataFrame:
         """
         Rank books by their count for general books and
         rank close (co-occurring) books by count weighted by co-occurrence with searched books
@@ -338,7 +360,7 @@ class RatingAnalyser:
             relevant_names: pd.DataFrame = self.brd.books[["ISBN", "Book-Title"]]\
                 .merge(top_matches[["ISBN", "book-weights"]], on="ISBN")\
                 .sort_values(by=['book-weights'], ascending=False)
-        print(f"The following books were selected {relevant_names.to_string()}")
+        print(f"The following books were selected \n {relevant_names.to_string()}")
 
     def explore_links(self, iterations: int = 50, top_books: int = 30, no_self_link: bool = True):
         """Explore links between books by applying link matrix
@@ -409,5 +431,6 @@ class RatingAnalyser:
 if __name__ == "__main__":
     tolkien_names: List[str] = ["J. R. R. Tolkien", "J.R.R. Tolkien", "J.R.R.Tolkien",
                                 "J.R.R. TOLKIEN", "John Ronald Reuel Tolkien"]
-    ra = RatingAnalyser(author="Frank Herbert", book_title='Dune', cache_prefix="Dune")
-    ra.run_full_analysis()
+    ra = RatingAnalyser(author="Frank Herbert", book_title='dune', cache_prefix="AllHerbert",
+                        strict_title=False, purge_cache=False)
+    ra.run_full_analysis(rating_thresh=7, count_thresh=4, plot_type='scatter')
